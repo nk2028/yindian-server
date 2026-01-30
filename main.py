@@ -1,100 +1,242 @@
-import cherrypy
-import csv
 import json
 import sqlite3
+from typing import Any, Sequence
 
-def 構建():
-    是方言的簡稱們 = set()
-    簡稱到分區與顏色 = {}
-    簡稱到排序 = {}
+from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi.concurrency import run_in_threadpool
+from starlette.status import HTTP_400_BAD_REQUEST, HTTP_500_INTERNAL_SERVER_ERROR
 
-    with open('data/info.csv', encoding='utf-8') as f:
-        reader = csv.reader(f, delimiter=',', quotechar='"', strict=True)
+MAX_CHARS = 512
 
-        _, _, *rest = next(reader)
-        分區_idx = rest.index('地圖集二分區')
-        顏色_idx = rest.index('地圖集二顏色')
-        排序_idx = rest.index('地圖集二排序')
+app = FastAPI(title="MCPDict API", version="1.0.0")
 
-        for _, 簡稱, *rest in reader:
-            分區 = rest[分區_idx]
-            顏色 = rest[顏色_idx]
-            排序 = rest[排序_idx]
+def _dedup(chars: str) -> list[str]:
+    """Remove duplicate characters while preserving order.
+    E.g. "漢漢字字" -> ["漢", "字"]
+    """
+    return list(dict.fromkeys(chars))
 
-            if 分區 and 顏色 and 排序:
-                是方言的簡稱們.add(簡稱)
-                簡稱到分區與顏色[簡稱] = 分區, 顏色
-                簡稱到排序[簡稱] = 排序
+def _open_ro_conn() -> sqlite3.Connection:
+    """
+    Open a read-only SQLite connection using URI mode.
+    We keep it short-lived per request: less shared-state, fewer surprises.
+    """
+    conn = sqlite3.connect(
+        "file:mcpdict.db?mode=ro",
+        uri=True,
+        check_same_thread=False,
+        isolation_level=None,  # autocommit; good for read-only
+    )
+    conn.row_factory = sqlite3.Row
 
-    return 是方言的簡稱們, 簡稱到分區與顏色, 簡稱到排序
+    # Defensive pragmas for production stability.
+    conn.execute("PRAGMA busy_timeout = 2000;")
+    conn.execute("PRAGMA query_only = ON;")
+    conn.execute("PRAGMA trusted_schema = OFF;")
+    conn.execute("PRAGMA temp_store = MEMORY;")
+    return conn
 
-是方言的簡稱們, 簡稱到分區與顏色, 簡稱到排序 = 構建()
+def _build_query(n: int) -> str:
+    """
+    Build the SQL with a VALUES list of n rows.
+    Parameterized: each row contributes (?, ?) = (字頭, 字頭編號).
+    """
+    if n <= 0:
+        # Not expected to be used; caller handles empty input.
+        raise ValueError("n must be > 0")
 
-class Server:
-    def __init__(self):
-        self.db = sqlite3.connect('file:data/mcpdict.db?mode=ro', uri=True, check_same_thread=False)  # we are safe because we only use the database in a read-only manner
+    values_sql = ", ".join(["(?, ?)"] * n)
 
-    @cherrypy.expose
-    def index(self):
-        raise cherrypy.HTTPRedirect('https://nk2028.shn.hk/hdqt/')
+    return f"""
+WITH q(字頭, 字頭編號) AS (
+  VALUES {values_sql}
+),
+hits AS (
+  SELECT
+    q.字頭,
+	q.字頭編號,
+    r.語言ID,
+    l.讀音,
+    l.註釋
+  FROM q
+  JOIN langs l
+    ON langs MATCH ('字組:' || q.字頭)
+  JOIN info_rowid r
+    ON l.語言 = r.簡稱
+  ORDER BY q.字頭編號, r.語言ID
+),
+grouped AS (
+  SELECT
+    字頭,
+    json_group_array(
+      CASE
+        WHEN 註釋 IS NULL OR 註釋 = ''
+      THEN json_array(語言ID, 讀音)
+        ELSE json_array(語言ID, 讀音, 註釋)
+      END
+    ) AS 明細
+  FROM hits
+  GROUP BY 字頭編號
+),
+payload AS (
+  SELECT
+    json_group_array(
+      json_array(
+        字頭,
+        json(明細)
+      )
+    ) AS data
+  FROM grouped
+)
+SELECT
+  json_object(
+    'version', b.version,
+    'data', json(p.data)
+  ) AS result
+FROM build_version b
+CROSS JOIN payload p;"""
 
-    @cherrypy.expose
-    def default(self, *args, **kwargs):
-        message = {'錯誤': '請求的資源不存在'}
-        cherrypy.response.status = 404
-        cherrypy.response.headers['Content-Type'] = 'application/json'
-        cherrypy.response.headers['Access-Control-Allow-Origin'] = '*'
-        cherrypy.response.headers['Access-Control-Allow-Headers'] = 'content-type'
-        cherrypy.response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-        cherrypy.response.headers['Access-Control-Allow-Credentials'] = 'true'
-        return json.dumps(message, ensure_ascii=False)
+def _make_params(chars_list: Sequence[str]) -> list[Any]:
+    """
+    Flatten params for VALUES (字頭, 字頭編號) repeated.
+    字頭編號 starts at 1 to match your original.
+    """
+    params: list[Any] = []
+    for idx, ch in enumerate(chars_list, start=1):
+        params.append(ch)
+        params.append(idx)
+    return params
 
-    @cherrypy.expose
-    def query(self, string: str) -> dict:
-        if not string:
+def _query_chars_sync(chars: str) -> Any:
+    """
+    Synchronous DB query. Returns Python object parsed from DB JSON result.
+    """
+    if chars is None:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="chars is required")
+
+    chars = chars.strip()
+    if not chars:
+        return []
+
+    chars_list = _dedup(chars)
+
+    if len(chars_list) > MAX_CHARS:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=f"too many chars; max={MAX_CHARS}")
+
+    sql = _build_query(len(chars_list))
+    params = _make_params(chars_list)
+
+    try:
+        conn = _open_ro_conn()
+        try:
+            row = conn.execute(sql, params).fetchone()
+        finally:
+            conn.close()
+
+        if row is None or row["result"] is None:
             return []
 
-        cur = self.db.cursor()
+        # SQLite JSON functions return text; parse to real JSON.
+        return json.loads(row["result"])
 
-        string = list({漢字: None for 漢字 in string})  # 去重
-        placeholders = ', '.join('?' for _ in string)
-        cur.execute(f'SELECT * FROM "mcpdict" WHERE "漢字" IN ({placeholders});', string)
+    except HTTPException:
+        raise
+    except sqlite3.OperationalError as e:
+        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=f"database error: {e.__class__.__name__}") from e
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail="database returned invalid json") from e
+    except Exception as e:
+        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail="internal server error") from e
 
-        results = cur.fetchall()
-        column_names = [description[0] for description in cur.description]
+@app.get("/chars/", response_class=Response)
+async def get_chars(chars: str = Query(..., description="Characters to look up")) -> Response:
+    """
+    Returns JSON array like:
+    [
+      ["是", [[語言ID, 讀音], [語言ID, 讀音, 註釋], ...]],
+      ["社", [...]],
+      ...
+    ]
+    """
+    result_obj = await run_in_threadpool(_query_chars_sync, chars)
+    # We emit canonical JSON (no trailing whitespace), UTF-8, and do not escape CJK.
+    payload = json.dumps(result_obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return Response(content=payload, media_type="application/json; charset=utf-8")
 
-        cur.close()
 
-        漢字到idx = {漢字: idx for idx, 漢字 in enumerate(string)}
+# ...（保留你原有 import / 常量 / app / helper）...
 
-        漢字_column = column_names.index('漢字')
-        results = sorted(results, key=lambda result: 漢字到idx[result[漢字_column]])
-        字頭們 = [result[漢字_column] for result in results]
+def _list_langs_sync() -> Any:
+    """
+    Synchronous DB query. Returns Python object parsed from DB JSON result.
+    """
+    sql = """
+WITH r AS (
+  SELECT
+    ROWID AS 語言ID,
+    語言,簡稱,
+    地圖集二排序,地圖集二顏色,地圖集二分區,
+    音典排序,音典顏色,音典分區,
+    陳邡排序,陳邡顏色,陳邡分區,經緯度
+  FROM info
+),
+payload AS (
+  SELECT json_group_array(
+    json_array(
+      語言ID,語言,簡稱,
+      地圖集二排序,地圖集二顏色,地圖集二分區,
+      音典排序,音典顏色,音典分區,
+      陳邡排序,陳邡顏色,陳邡分區,經緯度
+    )
+  ) AS data
+  FROM r
+) 
+SELECT
+  json_object(
+    'version', b.version,
+    'data', json(p.data)
+  ) AS result
+FROM build_version b
+CROSS JOIN payload p;"""
+    try:
+        conn = _open_ro_conn()
+        try:
+            row = conn.execute(sql).fetchone()
+        finally:
+            conn.close()
 
-        res = [('', *字頭們)] + sorted(
-            ((
-                簡稱, *簡稱到分區與顏色[簡稱], *[字音 or '' for 字音 in 字音們])
-                for 簡稱, *字音們
-                in zip(column_names, *results)
-                if 簡稱 in 是方言的簡稱們 and any(字音 for 字音 in 字音們)
-            ),
-            key=lambda 簡稱_rest: 簡稱到排序[簡稱_rest[0]]
-        )
+        if row is None or row["result"] is None:
+            return []
 
-        cherrypy.response.headers['Content-Type'] = 'application/json'
-        cherrypy.response.headers['Access-Control-Allow-Origin'] = '*'
-        cherrypy.response.headers['Access-Control-Allow-Headers'] = 'content-type'
-        cherrypy.response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-        cherrypy.response.headers['Access-Control-Allow-Credentials'] = 'true'
-        return json.dumps(res, ensure_ascii=False)
+        return json.loads(row["result"])
 
-if __name__ == '__main__':
-    cherrypy.config.update({
-        'environment': 'production',
-        'log.screen': False,
-        'server.socket_host': '0.0.0.0',
-        'server.socket_port': 8080,
-        'show_tracebacks': False,
-        'tools.encode.text_only': False,
-    })
-    cherrypy.quickstart(Server())
+    except sqlite3.OperationalError as e:
+        raise HTTPException(
+            status_code=HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"database error: {e.__class__.__name__}",
+        ) from e
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="database returned invalid json",
+        ) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="internal server error",
+        ) from e
+
+# ...（保留你原有 /chars/ 路由）...
+
+@app.get("/list-langs/", response_class=Response)
+async def list_langs() -> Response:
+    """
+    Returns JSON array like:
+    [
+      [語言ID,語言,簡稱,地圖集二排序,地圖集二顏色,地圖集二分區,音典排序,音典顏色,音典分區,陳邡排序,陳邡顏色,陳邡分區],
+      ...
+    ]
+    """
+    result_obj = await run_in_threadpool(_list_langs_sync)
+    payload = json.dumps(result_obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return Response(content=payload, media_type="application/json; charset=utf-8")

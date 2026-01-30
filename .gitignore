@@ -1,2 +1,4 @@
-/MCPDict
-/data
+__pycache__
+MCPDict/
+data/
+mcpdict.db
