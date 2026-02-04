@@ -54,7 +54,7 @@ WITH q(字頭, 字頭編號) AS (
 hits AS (
   SELECT
     q.字頭,
-	  q.字頭編號,
+    q.字頭編號,
     r.語言ID,
     l.讀音,
     l.註釋
@@ -153,18 +153,15 @@ async def get_chars(chars: str = Query(..., description="Characters to look up")
     """
     Returns JSON array like:
     [
-      ["是", [[語言ID, 讀音], [語言ID, 讀音, 註釋], ...]],
-      ["社", [...]],
-      ...
+        ["是", [[語言ID, 讀音], [語言ID, 讀音, 註釋], ...]],
+        ["社", [...]],
+        ...
     ]
     """
     result_obj = await run_in_threadpool(_query_chars_sync, chars)
     # We emit canonical JSON (no trailing whitespace), UTF-8, and do not escape CJK.
     payload = json.dumps(result_obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return Response(content=payload, media_type="application/json; charset=utf-8")
-
-
-# ...（保留你原有 import / 常量 / app / helper）...
 
 def _list_langs_sync() -> Any:
     """
@@ -177,7 +174,8 @@ WITH r AS (
     語言,簡稱,
     地圖集二排序,地圖集二顏色,地圖集二分區,
     音典排序,音典顏色,音典分區,
-    陳邡排序,陳邡顏色,陳邡分區,地點,經緯度
+    陳邡排序,陳邡顏色,陳邡分區,
+    地點,經緯度
   FROM info
   WHERE 簡稱<>'漢字'
 ),
@@ -187,7 +185,8 @@ payload AS (
       語言ID,語言,簡稱,
       地圖集二排序,地圖集二顏色,地圖集二分區,
       音典排序,音典顏色,音典分區,
-      陳邡排序,陳邡顏色,陳邡分區,地點,經緯度
+      陳邡排序,陳邡顏色,陳邡分區,
+      地點,經緯度
     )
   ) AS data
   FROM r
@@ -227,15 +226,19 @@ CROSS JOIN payload p;"""
             detail="internal server error",
         ) from e
 
-# ...（保留你原有 /chars/ 路由）...
-
 @app.get("/list-langs/", response_class=Response)
 async def list_langs() -> Response:
     """
     Returns JSON array like:
     [
-      [語言ID,語言,簡稱,地圖集二排序,地圖集二顏色,地圖集二分區,音典排序,音典顏色,音典分區,陳邡排序,陳邡顏色,陳邡分區],
-      ...
+        [
+            語言ID,語言,簡稱,
+            地圖集二排序,地圖集二顏色,地圖集二分區,
+            音典排序,音典顏色,音典分區,
+            陳邡排序,陳邡顏色,陳邡分區,
+            地點,經緯度
+        ],
+        ...
     ]
     """
     result_obj = await run_in_threadpool(_list_langs_sync)

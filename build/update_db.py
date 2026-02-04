@@ -16,6 +16,8 @@ SELECT 簡稱, info.ROWID
 FROM info;
 """)
 
+# Add a build_version table to track database build versions
+
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS build_version (
     version INTEGER DEFAULT (strftime('%s','now'))
