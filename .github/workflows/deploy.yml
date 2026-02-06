@@ -19,6 +19,14 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v6
 
+    - name: Set up Python 3.14
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.14'
+
+    - name: Install Python dependencies
+      run: cd build/ && pip install -r requirements.txt
+
     - name: Run build script
       run: cd build/ && ./main.sh
 
