@@ -8,18 +8,7 @@ The backend itself is organised into two primary directories. The `build/` direc
 
 The backend is deployed on Tencent Cloud's Serverless Cloud Function (SCF) platform.
 
-To build the backend:
-
-```sh
-git clone https://github.com/nk2028/yindian-server.git
-cd yindian-server/
-cd build/
-./main.sh
-cd ../server/
-docker build -t yindian-server .
-docker tag yindian-server:latest ccr.ccs.tencentyun.com/nk2028/yindian-server:latest
-docker push ccr.ccs.tencentyun.com/nk2028/yindian-server:latest
-```
+To build the backend, please refer to `.github/workflows/deploy.yml`.
 
 After pushing the image to Tencent Cloud Container Registry, deployment must be manually performed via the SCF console. Note that manual redeployment is required every time the image is updated.
 
@@ -35,17 +24,6 @@ After pushing the image to Tencent Cloud Container Registry, deployment must be 
 
 音典網頁版的後端部署於騰訊雲雲函數 SCF。
 
-構建命令如下：
-
-```sh
-git clone https://github.com/nk2028/yindian-server.git
-cd yindian-server/
-cd build/
-./main.sh
-cd ../server/
-docker build -t yindian-server .
-docker tag yindian-server:latest ccr.ccs.tencentyun.com/nk2028/yindian-server:latest
-docker push ccr.ccs.tencentyun.com/nk2028/yindian-server:latest
-```
+構建命令請參考 `.github/workflows/deploy.yml`.
 
 鏡像推送至騰訊雲鏡像存儲後，在騰訊雲雲函數 SCF 控制台手動部署。每次更新鏡像後都要重新手動部署一次。

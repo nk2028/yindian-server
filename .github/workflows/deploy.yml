@@ -1,0 +1,35 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+    - 'README.md'
+
+  workflow_dispatch:
+
+  schedule:
+    - cron: '0 9 * * 1'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Run build script
+      run: cd build/ && ./main.sh
+
+    - name: Login to Tencent Cloud Container Registry
+      run: echo "${{ secrets.TENCENT_REGISTRY_PASSWORD }}" | docker login ccr.ccs.tencentyun.com --username ${{ secrets.TENCENT_REGISTRY_USERNAME }} --password-stdin
+
+    - name: Build Docker image
+      run: cd server/ && docker build -t yindian-server .
+
+    - name: Tag Docker image
+      run: docker tag yindian-server:latest ccr.ccs.tencentyun.com/nk2028/yindian-server:latest
+
+    - name: Push to registry
+      run: docker push ccr.ccs.tencentyun.com/nk2028/yindian-server:latest
