@@ -34,7 +34,7 @@ Query Parameters: None
 
 Example Response:
 
-```json
+```js
 {
     "version": "1770216365",
     "data": [
@@ -68,7 +68,7 @@ Query Parameters:
 
 Example Response:
 
-```json
+```js
 {
   "version": "1770216365",
   "data": [
