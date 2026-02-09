@@ -10,8 +10,6 @@ The backend is deployed on Tencent Cloud's Serverless Cloud Function (SCF) platf
 
 To build the backend, please refer to `.github/workflows/deploy.yml`.
 
-After pushing the image to Tencent Cloud Container Registry, deployment must be manually performed via the SCF console. Note that manual redeployment is required every time the image is updated.
-
 ---
 
 # 音典網頁版伺服器
@@ -25,5 +23,3 @@ After pushing the image to Tencent Cloud Container Registry, deployment must be 
 音典網頁版的後端部署於騰訊雲雲函數 SCF。
 
 構建命令請參考 `.github/workflows/deploy.yml`.
-
-鏡像推送至騰訊雲鏡像存儲後，在騰訊雲雲函數 SCF 控制台手動部署。每次更新鏡像後都要重新手動部署一次。

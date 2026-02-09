@@ -9,11 +9,11 @@ on:
   workflow_dispatch:
 
   schedule:
-    - cron: '0 9 * * 1'
+  - cron: '0 9 * * 1'
 
 concurrency:
-  group: "pages"
-  cancel-in-progress: false
+  group: "deploy"
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -45,3 +45,12 @@ jobs:
 
     - name: Push to registry
       run: docker push ccr.ccs.tencentyun.com/nk2028/yindian-server:latest
+
+    - name: Install Tencent Cloud CLI tools
+      run: pip install -r requirements.txt
+
+    - name: Deploy to Tencent Cloud
+      run: tccli scf UpdateFunctionCode --cli-unfold-argument --region ap-guangzhou --FunctionName yindian-server --Code.ImageConfig.ImageType personal --Code.ImageConfig.ImageUri 'ccr.ccs.tencentyun.com/nk2028/yindian-server:latest' --Code.ImageConfig.ContainerImageAccelerate True
+      env:
+        TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SCF_SECRET_ID }}
+        TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SCF_SECRET_KEY }}
