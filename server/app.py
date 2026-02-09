@@ -80,7 +80,7 @@ SELECT
   q.字頭,
   CASE
     WHEN COUNT(*) = 1 AND (MAX(l.註釋)  IS NULL OR MAX(l.註釋) = '')
-    THEN MAX(l.讀音)
+    THEN json_quote(MAX(l.讀音))
     ELSE json_group_array(
       CASE
         WHEN l.註釋 IS NULL OR l.註釋 = ''
@@ -137,6 +137,7 @@ def _query_chars_sync(chars: str) -> Any:
         finally:
             conn.close()
 
+        df["讀音"] = df["讀音"].apply(json.loads)
         pivot_df = df.pivot(index='語言ID', columns='字頭', values='讀音')
         pivot_df.columns.name = None
         pivot_df = pivot_df.reset_index().fillna('')
