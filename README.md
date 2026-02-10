@@ -10,8 +10,6 @@ The backend is deployed on Tencent Cloud's Serverless Cloud Function (SCF) platf
 
 To build the backend, please refer to `.github/workflows/deploy.yml`.
 
-After pushing the image to Tencent Cloud Container Registry, deployment must be manually performed via the SCF console. Note that manual redeployment is required every time the image is updated.
-
 ---
 
 # 音典網頁版伺服器
@@ -26,4 +24,79 @@ After pushing the image to Tencent Cloud Container Registry, deployment must be 
 
 構建命令請參考 `.github/workflows/deploy.yml`.
 
-鏡像推送至騰訊雲鏡像存儲後，在騰訊雲雲函數 SCF 控制台手動部署。每次更新鏡像後都要重新手動部署一次。
+---
+
+# API Description
+
+### 1\. `GET /list-langs/`
+
+Query Parameters: None
+
+Example Response:
+
+```js
+{
+    "version": "1770216365",
+    "data": [
+        [
+            2312, // 語言ID
+            "興寧話", // 語言
+            "興寧", // 簡稱
+            "HFB-006", // 地圖集二排序
+            "#A5C24E", // 地圖集二顏色
+            "客家話－粤臺片－龍華小片", // 地圖集二分區
+            "L7A-107", // 音典排序
+            "#BFB465", // 音典顏色
+            "閩－閩西－嘉應", // 音典分區
+            "33B3", // 陳邡排序
+            "#008000", // 陳邡顏色
+            "客家－嘉應－嘉應片", // 陳邡分區
+            "廣東梅州興寧興城", // 地點
+            "115.735283,24.136753" // 經緯度
+        ],
+        ...
+    ]
+```
+
+### 2\. `GET /chars/`
+
+Query Parameters:
+
+| Name | Type | Description | Required |
+| :- | :- | :- | :- |
+| `chars` | `str` | A string of Chinese characters, e.g. `"是社"` | Yes |
+
+Example Response:
+
+```js
+{
+  "version": "1770216365",
+  "data": [
+    ["語言ID", "意", "思", "是"], // header
+    [
+      222,
+      "i5",
+      "", // missing values
+      ""
+    ],
+    [
+      2215,
+      "i5",
+      [["so5"], ["so1"]],  // multiple readings
+      "si5"
+    ]，
+    [
+      2312,
+      "ʒɪ5",
+      "sɿ1",
+      "ʃɪ5"
+    ],
+    [
+      2325,
+      "i5",
+      [["sɿ1", "*思*想,*思*念"], ["sɿ5", "意*思*"]], // multiple readings with annotations
+      "sɿ5"
+    ]
+  ]
+}
+```

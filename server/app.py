@@ -1,14 +1,38 @@
+from contextlib import asynccontextmanager
 import json
 import sqlite3
 from typing import Any, Sequence
+import pandas as pd
 
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.concurrency import run_in_threadpool
 from starlette.status import HTTP_400_BAD_REQUEST, HTTP_500_INTERNAL_SERVER_ERROR
 
-MAX_CHARS = 512
+MAX_CHARS = 128
 
-app = FastAPI(title="MCPDict API", version="1.0.0")
+BUILD_VERSION: str | None = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global BUILD_VERSION
+    try:
+        conn = _open_ro_conn()
+        try:
+            row = conn.execute("SELECT CAST(version AS TEXT) AS version FROM build_version;").fetchone()
+            if row and row["version"]:
+                BUILD_VERSION = row["version"]
+            else:
+                raise RuntimeError("No version found in build_version table.")
+        finally:
+            conn.close()
+    except Exception as e:
+        raise RuntimeError(f"Failed to load build version during lifespan startup: {e}")
+
+    yield
+
+    # No shutdown logic needed — leave empty or add logging/cleanup if desired
+
+app = FastAPI(title="MCPDict API", version="1.0.0", lifespan=lifespan)
 
 def _dedup(chars: str) -> list[str]:
     """Remove duplicate characters while preserving order.
@@ -50,51 +74,28 @@ def _build_query(n: int) -> str:
     return f"""
 WITH q(字頭, 字頭編號) AS (
   VALUES {values_sql}
-),
-hits AS (
-  SELECT
-    q.字頭,
-    q.字頭編號,
-    r.語言ID,
-    l.讀音,
-    l.註釋
-  FROM q
-  JOIN langs l
-    ON langs MATCH ('字組:' || q.字頭)
-  JOIN info_rowid r
-    ON l.語言 = r.簡稱
-  ORDER BY q.字頭編號, r.語言ID
-),
-grouped AS (
-  SELECT
-    字頭,
-    json_group_array(
-      CASE
-        WHEN 註釋 IS NULL OR 註釋 = ''
-      THEN json_array(語言ID, 讀音)
-        ELSE json_array(語言ID, 讀音, 註釋)
-      END
-    ) AS 明細
-  FROM hits
-  GROUP BY 字頭編號
-),
-payload AS (
-  SELECT
-    json_group_array(
-      json_array(
-        字頭,
-        json(明細)
-      )
-    ) AS data
-  FROM grouped
 )
 SELECT
-  json_object(
-    'version', b.version,
-    'data', json(p.data)
-  ) AS result
-FROM build_version b
-CROSS JOIN payload p;"""
+  r.語言ID,
+  q.字頭,
+  CASE
+    WHEN COUNT(*) = 1 AND (MAX(l.註釋)  IS NULL OR MAX(l.註釋) = '')
+    THEN json_quote(MAX(l.讀音))
+    ELSE json_group_array(
+      CASE
+        WHEN l.註釋 IS NULL OR l.註釋 = ''
+        THEN json_array(l.讀音)
+        ELSE json_array(l.讀音,l.註釋)
+      END
+    )
+  END AS 讀音
+FROM q
+JOIN langs l
+  ON langs MATCH ('字組:' || q.字頭)
+JOIN info_rowid r
+  ON l.語言 = r.簡稱
+GROUP BY q.字頭編號, r.語言ID
+ORDER BY r.語言ID;"""
 
 def _make_params(chars_list: Sequence[str]) -> list[Any]:
     """
@@ -114,6 +115,9 @@ def _query_chars_sync(chars: str) -> Any:
     if chars is None:
         raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="chars is required")
 
+    if BUILD_VERSION is None:
+        raise HTTPException(status_code=500, detail="Build version not initialized")
+
     chars = chars.strip()
     if not chars:
         return []
@@ -129,15 +133,22 @@ def _query_chars_sync(chars: str) -> Any:
     try:
         conn = _open_ro_conn()
         try:
-            row = conn.execute(sql, params).fetchone()
+            df = pd.read_sql_query(sql, conn, params=params)
         finally:
             conn.close()
 
-        if row is None or row["result"] is None:
-            return []
+        df["讀音"] = df["讀音"].apply(json.loads)
+        pivot_df = df.pivot(index='語言ID', columns='字頭', values='讀音')
+        pivot_df.columns.name = None
+        pivot_df = pivot_df.reset_index().fillna('')
+        # Reorder columns to have 'id' first, then the characters in the order they were queried.
+        pivot_df = pivot_df[['語言ID', *chars_list]]
+        data_2d = [pivot_df.columns.tolist()] + pivot_df.values.tolist()
 
-        # SQLite JSON functions return text; parse to real JSON.
-        return json.loads(row["result"])
+        return {
+            'version': BUILD_VERSION,
+            'data': data_2d,
+        }
 
     except HTTPException:
         raise
@@ -193,7 +204,7 @@ payload AS (
 ) 
 SELECT
   json_object(
-    'version', b.version,
+    'version', CAST(b.version AS TEXT),
     'data', json(p.data)
   ) AS result
 FROM build_version b
