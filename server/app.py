@@ -141,8 +141,12 @@ def _query_chars_sync(chars: str) -> Any:
         pivot_df = df.pivot(index='語言ID', columns='字頭', values='讀音')
         pivot_df.columns.name = None
         pivot_df = pivot_df.reset_index().fillna('')
+
         # Reorder columns to have 'id' first, then the characters in the order they were queried.
-        pivot_df = pivot_df[['語言ID', *chars_list]]
+        all_chars_in_result = set(pivot_df.columns[1:])
+        chars_list_in_order = [ch for ch in chars_list if ch in all_chars_in_result]
+        pivot_df = pivot_df[['語言ID', *chars_list_in_order]]
+
         data_2d = [pivot_df.columns.tolist()] + pivot_df.values.tolist()
 
         return {
